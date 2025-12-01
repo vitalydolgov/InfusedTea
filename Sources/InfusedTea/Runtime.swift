@@ -11,18 +11,19 @@ enum Command<Message>: Sendable {
     case none
 }
 
-/// Defines the behavior of a TEA (The Elm Architecture) program.
-protocol Program {
-    /// Represents state transitions in the domain of the program.
+/// Defines the behavior of a TEA (The Elm Architecture) component. Components can be composed
+/// together. The top-level component passed to runtime is called a program.
+protocol Component {
+    /// Represents state transitions in the domain of the component.
     associatedtype Message: Sendable
 
-    /// Represents the program's state data.
+    /// Represents the component's state data.
     associatedtype Model
 
-    /// Initial state of the program and initial command to be executed when the program starts.
+    /// Initial state of the component and initial command to be executed when the component starts.
     func initialize() -> (Model, Command<Message>)
 
-    /// Describes the next state of the program based on the current state and the incoming message.
+    /// Describes the next state of the component based on the current state and the incoming message.
     func update(_ model: Model, with message: Message) -> (Model, Command<Message>)
 
     /// External event sources (timers, network streams, etc.) active for the current state. Returns
@@ -31,34 +32,34 @@ protocol Program {
     func subscriptions(_ model: Model) -> [AnyHashable: AsyncStream<Message>]
 }
 
-extension Program {
+extension Component {
     func subscriptions(_: Model) -> [AnyHashable: AsyncStream<Message>] { [:] }
 }
 
 /// A runtime that executes a TEA program. Manages the program's lifecycle, model state, message
 /// dispatch, and command execution.  The runtime processes messages from both external sources and
 /// commands.
-actor Runtime<P: Program> {
+actor Runtime<Program: Component> {
     /// Program to be executed in the runtime.
-    let program: P
+    let program: Program
 
     /// The current state of the program's model. Updated after each message is processed.
-    private(set) var currentModel: P.Model?
+    private(set) var currentModel: Program.Model?
 
     /// Middleware function called on initialization and after each model update, receiving the new
     /// model and command.
-    typealias Middleware = (P.Model, Command<P.Message>) -> Void
+    typealias Middleware = (Program.Model, Command<Program.Message>) -> Void
     private var middlewares = [Middleware]()
 
-    private let messageStream: AsyncStream<P.Message>
-    private let messageContinuation: AsyncStream<P.Message>.Continuation
+    private let messageStream: AsyncStream<Program.Message>
+    private let messageContinuation: AsyncStream<Program.Message>.Continuation
 
     private var currentSubscriptions = [AnyHashable: Task<Void, Never>]()
 
-    init(program: P) {
+    init(program: Program) {
         self.program = program
 
-        let (messageStream, messageContinuation) = AsyncStream<P.Message>.makeStream()
+        let (messageStream, messageContinuation) = AsyncStream<Program.Message>.makeStream()
         self.messageStream = messageStream
         self.messageContinuation = messageContinuation
     }
@@ -81,7 +82,9 @@ actor Runtime<P: Program> {
         await messageLoop()
     }
 
-    private func startSubscription(_ subscription: AsyncStream<P.Message>, with id: AnyHashable) {
+    private func startSubscription(
+        _ subscription: AsyncStream<Program.Message>, with id: AnyHashable
+    ) {
         currentSubscriptions[id] = Task {
             for await message in subscription {
                 self.messageContinuation.yield(message)
@@ -90,7 +93,7 @@ actor Runtime<P: Program> {
         }
     }
 
-    private func execute(_ command: Command<P.Message>) async {
+    private func execute(_ command: Command<Program.Message>) async {
         switch command {
         case let .task(thunk):
             let message = await thunk()
@@ -124,7 +127,7 @@ actor Runtime<P: Program> {
         }
     }
 
-    private func updateSubscriptions(_ newModel: P.Model) {
+    private func updateSubscriptions(_ newModel: Program.Model) {
         let newSubscriptions = program.subscriptions(newModel)
 
         let curIds = Set<AnyHashable>(currentSubscriptions.keys)
@@ -156,7 +159,7 @@ actor Runtime<P: Program> {
 
     /// Sends a message to the runtime. Can be used for external events such as timer fires, network
     /// callbacks, user interactions, etc.
-    func send(_ message: P.Message) async {
+    func send(_ message: Program.Message) async {
         messageContinuation.yield(message)
     }
 

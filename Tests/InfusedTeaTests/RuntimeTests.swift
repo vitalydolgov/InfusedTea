@@ -310,7 +310,7 @@ struct RuntimeTests {
     }
 }
 
-private struct Counter: Program {
+private struct Counter: Component {
     func initialize() -> (Int, Command<CounterMessage>) {
         (0, .none)
     }
@@ -325,7 +325,7 @@ private struct Counter: Program {
     }
 }
 
-private struct AsyncCounter: Program {
+private struct AsyncCounter: Component {
     func initialize() -> (Int, Command<CounterMessage>) {
         (0, .task { .increment })
     }
@@ -345,7 +345,7 @@ private enum CounterMessage {
     case increment, decrement
 }
 
-private struct SubscriptionCounter: Program {
+private struct SubscriptionCounter: Component {
     enum Message {
         case toggleRunning, toggleDirection
         case forwardTick, backwardTick
