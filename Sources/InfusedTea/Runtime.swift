@@ -13,11 +13,26 @@ enum Command<Message>: Sendable {
 
 /// Defines the behavior of a TEA (The Elm Architecture) program.
 protocol Program {
+    /// Represents state transitions in the domain of the program.
     associatedtype Message: Sendable
+
+    /// Represents the program's state data.
     associatedtype Model
 
+    /// Initial state of the program and initial command to be executed when the program starts.
     func initialize() -> (Model, Command<Message>)
+
+    /// Describes the next state of the program based on the current state and the incoming message.
     func update(_ model: Model, with message: Message) -> (Model, Command<Message>)
+
+    /// External event sources (timers, network streams, etc.) active for the current state. Returns
+    /// a dictionary of unique subscription IDs to async streams. Subscriptions with the same ID
+    /// across model updates continue running; new IDs start, removed IDs cancel.
+    func subscriptions(_ model: Model) -> [AnyHashable: AsyncStream<Message>]
+}
+
+extension Program {
+    func subscriptions(_: Model) -> [AnyHashable: AsyncStream<Message>] { [:] }
 }
 
 /// A runtime that executes a TEA program. Manages the program's lifecycle, model state, message
@@ -30,12 +45,15 @@ actor Runtime<P: Program> {
     /// The current state of the program's model. Updated after each message is processed.
     private(set) var currentModel: P.Model?
 
-    /// Middleware function called after each model update, receiving the new model and command.
+    /// Middleware function called on initialization and after each model update, receiving the new
+    /// model and command.
     typealias Middleware = (P.Model, Command<P.Message>) -> Void
     private var middlewares = [Middleware]()
 
     private let messageStream: AsyncStream<P.Message>
     private let messageContinuation: AsyncStream<P.Message>.Continuation
+
+    private var currentSubscriptions = [AnyHashable: Task<Void, Never>]()
 
     init(program: P) {
         self.program = program
@@ -50,36 +68,26 @@ actor Runtime<P: Program> {
     func start() async {
         let (model, command) = program.initialize()
         currentModel = model
-        await execute(command)
 
-        for await message in messageStream {
-            guard let model = currentModel else { continue }
-            let (newModel, newCommand) = program.update(model, with: message)
-
-            for middleware in middlewares {
-                middleware(newModel, newCommand)
-            }
-
-            currentModel = newModel
-            await execute(newCommand)
+        for (id, subscription) in program.subscriptions(model) {
+            startSubscription(subscription, with: id)
         }
+
+        for middleware in middlewares {
+            middleware(model, command)
+        }
+
+        await execute(command)
+        await messageLoop()
     }
 
-    /// Forced termination of the program, cleans up resources.
-    func stop() {
-        messageContinuation.finish()
-    }
-
-    /// Registers middleware to observe model updates and commands during program execution.
-    /// Useful for logging, debugging, and testing.
-    func use(middleware: @escaping Middleware) {
-        middlewares.append(middleware)
-    }
-
-    /// Sends a message to the runtime. Can be used for external events such as timer fires, network
-    /// callbacks, user interactions, etc.
-    func send(_ message: P.Message) async {
-        messageContinuation.yield(message)
+    private func startSubscription(_ subscription: AsyncStream<P.Message>, with id: AnyHashable) {
+        currentSubscriptions[id] = Task {
+            for await message in subscription {
+                self.messageContinuation.yield(message)
+            }
+            currentSubscriptions.removeValue(forKey: id)
+        }
     }
 
     private func execute(_ command: Command<P.Message>) async {
@@ -98,5 +106,62 @@ actor Runtime<P: Program> {
         case .none:
             break
         }
+    }
+
+    private func messageLoop() async {
+        for await message in messageStream {
+            guard let model = currentModel else { continue }
+            let (newModel, newCommand) = program.update(model, with: message)
+
+            currentModel = newModel
+            updateSubscriptions(newModel)
+
+            for middleware in middlewares {
+                middleware(newModel, newCommand)
+            }
+
+            await execute(newCommand)
+        }
+    }
+
+    private func updateSubscriptions(_ newModel: P.Model) {
+        let newSubscriptions = program.subscriptions(newModel)
+
+        let curIds = Set<AnyHashable>(currentSubscriptions.keys)
+        let newIds = Set<AnyHashable>(newSubscriptions.keys)
+
+        for id in curIds.subtracting(newIds) {
+            currentSubscriptions.removeValue(forKey: id)?.cancel()
+        }
+
+        for (id, subscription) in newSubscriptions where currentSubscriptions[id] == nil {
+            startSubscription(subscription, with: id)
+        }
+    }
+
+    /// Forced termination of the program, cleans up resources.
+    func stop() {
+        messageContinuation.finish()
+
+        for (_, subscription) in currentSubscriptions {
+            subscription.cancel()
+        }
+    }
+
+    /// Registers middleware to observe model updates and commands during program execution.
+    /// Useful for logging, debugging, and testing.
+    func use(middleware: @escaping Middleware) {
+        middlewares.append(middleware)
+    }
+
+    /// Sends a message to the runtime. Can be used for external events such as timer fires, network
+    /// callbacks, user interactions, etc.
+    func send(_ message: P.Message) async {
+        messageContinuation.yield(message)
+    }
+
+    /// Checks if a subscription with the given ID is currently active.
+    internal func isSubscribed(to id: AnyHashable) async -> Bool {
+        currentSubscriptions[id] != nil
     }
 }

@@ -1,4 +1,4 @@
---swiftversion 6.0
+--swiftversion 6.1
 --maxwidth 100
 --trimwhitespace always
---disable sortImports
+--disable all
