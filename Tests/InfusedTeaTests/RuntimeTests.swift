@@ -4,8 +4,7 @@ import Testing
 
 struct RuntimeTests {
     @Test func runtimeStops() async throws {
-        let program = Counter()
-        let runtime = Runtime(program: program)
+        let runtime = Runtime(program: Counter())
 
         let task = Task {
             await runtime.start()
@@ -15,25 +14,20 @@ struct RuntimeTests {
         try await Task.sleep(for: .milliseconds(10))
 
         await runtime.stop()
+
         let didStop = await task.value
         #expect(didStop)
     }
 
     @Test func programInit() async throws {
-        let program = Counter()
-        let runtime = Runtime(program: program)
-
-        let (heartbeatStream, heartbeatCont) = AsyncStream<Void>.makeStream()
-        await runtime.use { _, _ in
-            heartbeatCont.yield(())
-        }
+        let runtime = Runtime(program: Counter())
+        var iterator = await runtime.modelStream.makeAsyncIterator()
 
         Task {
             await runtime.start()
         }
 
-        var heartbeat = heartbeatStream.makeAsyncIterator()
-        await heartbeat.next()  // runtime is initialized
+        _ = await iterator.next()  // runtime is initialized
 
         await #expect(runtime.currentModel == 0)
 
@@ -41,61 +35,61 @@ struct RuntimeTests {
     }
 
     @Test func stateTransitions() async throws {
-        let program = Counter()
-        let runtime = Runtime(program: program)
-
-        var history = [Int]()
-        await runtime.use { newModel, _ in
-            history.append(newModel)
-        }
-
-        let (heartbeatStream, heartbeatCont) = AsyncStream<Void>.makeStream()
-        await runtime.use { _, _ in
-            heartbeatCont.yield(())
-        }
+        let runtime = Runtime(program: Counter())
+        var iterator = await runtime.modelStream.makeAsyncIterator()
 
         Task {
             await runtime.start()
         }
 
-        var heartbeat = heartbeatStream.makeAsyncIterator()
-        await heartbeat.next()  // runtime is initialized
+        var history = [Int]()
+
+        if let initialValue = await iterator.next() {
+            history.append(initialValue)
+        }
 
         await runtime.send(.increment)  // +1
-        await heartbeat.next()
+        if let value = await iterator.next() {
+            history.append(value)
+        }
 
         await runtime.send(.decrement)  // -1
-        await heartbeat.next()
+        if let value = await iterator.next() {
+            history.append(value)
+        }
 
         await runtime.send(.increment)  // +1
-        await heartbeat.next()
+        if let value = await iterator.next() {
+            history.append(value)
+        }
 
         await runtime.send(.increment)  // +1
-        await heartbeat.next()
+        if let value = await iterator.next() {
+            history.append(value)
+        }
 
         await runtime.send(.decrement)  // -1
-        await heartbeat.next()
+        if let value = await iterator.next() {
+            history.append(value)
+        }
 
         #expect(history == [0, 1, 0, 1, 2, 1])
 
         await runtime.stop()
     }
 
-    @Test func asyncCommands() async throws {
-        let program = AsyncCounter()
-        let runtime = Runtime(program: program)
-
-        var history = [Int]()
-        await runtime.use { newModel, _ in
-            history.append(newModel)
-        }
+    @Test func asyncCommand() async throws {
+        let runtime = Runtime(program: SingleAsyncIncrement())
+        var iterator = await runtime.modelStream.makeAsyncIterator()
 
         Task {
             await runtime.start()
         }
 
-        try await Task.sleep(for: .milliseconds(50))  // wait for async command chain
-        #expect(history == [0, 1, 2, 3])
+        _ = await iterator.next()  // runtime is initialized
+
+        let afterAsync = await iterator.next()
+        #expect(afterAsync == 1)
 
         await runtime.stop()
     }
@@ -107,30 +101,32 @@ struct RuntimeTests {
             ["forward": forwardStream]
         }
         let runtime = Runtime(program: program)
-
-        var history = [Int]()
-        await runtime.use { newModel, _ in
-            history.append(newModel.tickCount)
-        }
-
-        let (heartbeatStream, heartbeatCont) = AsyncStream<Void>.makeStream()
-        await runtime.use { _, _ in
-            heartbeatCont.yield(())
-        }
+        var iterator = await runtime.modelStream.makeAsyncIterator()
 
         Task {
             await runtime.start()
         }
 
-        var heartbeat = heartbeatStream.makeAsyncIterator()
-        await heartbeat.next()  // runtime is initialized
+        var history = [Int]()
+
+        if let initialModel = await iterator.next() {
+            history.append(initialModel.tickCount)
+        }
 
         forwardCont.yield(.forwardTick)
-        await heartbeat.next()
+        if let model = await iterator.next() {
+            history.append(model.tickCount)
+        }
+
         forwardCont.yield(.forwardTick)
-        await heartbeat.next()
+        if let model = await iterator.next() {
+            history.append(model.tickCount)
+        }
+
         forwardCont.yield(.forwardTick)
-        await heartbeat.next()
+        if let model = await iterator.next() {
+            history.append(model.tickCount)
+        }
 
         #expect(history == [0, 1, 2, 3])
 
@@ -148,35 +144,30 @@ struct RuntimeTests {
             }
         }
         let runtime = Runtime(program: program)
-
-        let (heartbeatStream, heartbeatCont) = AsyncStream<Void>.makeStream()
-        await runtime.use { _, _ in
-            heartbeatCont.yield(())
-        }
+        var iterator = await runtime.modelStream.makeAsyncIterator()
 
         Task {
             await runtime.start()
         }
 
-        var heartbeat = heartbeatStream.makeAsyncIterator()
-        await heartbeat.next()  // runtime is initialized
+        _ = await iterator.next()  // runtime is initialized
 
         await #expect(runtime.isSubscribed(to: "tick") == false)
 
         await runtime.send(.toggleRunning)
-        await heartbeat.next()  // subscription enabled
+        _ = await iterator.next()  // subscription enabled
         await #expect(runtime.isSubscribed(to: "tick") == true)
 
         tickCont.yield(.forwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 1)
 
         tickCont.yield(.forwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 2)
 
         await runtime.send(.toggleRunning)
-        await heartbeat.next()  // subscription disabled
+        _ = await iterator.next()  // subscription disabled
         await #expect(runtime.isSubscribed(to: "tick") == false)
 
         await runtime.stop()
@@ -194,31 +185,26 @@ struct RuntimeTests {
             }
         }
         let runtime = Runtime(program: program)
-
-        let (heartbeatStream, heartbeatCont) = AsyncStream<Void>.makeStream()
-        await runtime.use { _, _ in
-            heartbeatCont.yield(())
-        }
+        var iterator = await runtime.modelStream.makeAsyncIterator()
 
         Task {
             await runtime.start()
         }
 
-        var heartbeat = heartbeatStream.makeAsyncIterator()
-        await heartbeat.next()  // runtime is initialized
+        _ = await iterator.next()  // runtime is initialized
 
         await #expect(runtime.isSubscribed(to: "stream") == true)
 
         forwardCont.yield(.forwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 1)
 
         await runtime.send(.toggleDirection)
-        await heartbeat.next()  // toggled to backward, but forward continues (same ID)
+        _ = await iterator.next()  // toggled to backward, but forward continues (same ID)
         await #expect(runtime.currentModel?.tickCount == 1)
 
         forwardCont.yield(.forwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 2)
 
         await runtime.stop()
@@ -232,36 +218,31 @@ struct RuntimeTests {
             ["forward": forwardStream, "backward": backwardStream]
         }
         let runtime = Runtime(program: program)
-
-        let (heartbeatStream, heartbeatCont) = AsyncStream<Void>.makeStream()
-        await runtime.use { _, _ in
-            heartbeatCont.yield(())
-        }
+        var iterator = await runtime.modelStream.makeAsyncIterator()
 
         Task {
             await runtime.start()
         }
 
-        var heartbeat = heartbeatStream.makeAsyncIterator()
-        await heartbeat.next()  // runtime is initialized
+        _ = await iterator.next()  // runtime is initialized
 
         await #expect(runtime.isSubscribed(to: "forward") == true)
         await #expect(runtime.isSubscribed(to: "backward") == true)
 
         forwardCont.yield(.forwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 1)
 
         backwardCont.yield(.backwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 0)
 
         forwardCont.yield(.forwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 1)
 
         backwardCont.yield(.backwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 0)
 
         await runtime.stop()
@@ -275,42 +256,52 @@ struct RuntimeTests {
             ["forward": forwardStream, "backward": backwardStream]
         }
         let runtime = Runtime(program: program)
-
-        let (heartbeatStream, heartbeatCont) = AsyncStream<Void>.makeStream()
-        await runtime.use { _, _ in
-            heartbeatCont.yield(())
-        }
+        var iterator = await runtime.modelStream.makeAsyncIterator()
 
         Task {
             await runtime.start()
         }
 
-        var heartbeat = heartbeatStream.makeAsyncIterator()
-        await heartbeat.next()  // runtime is initialized
+        _ = await iterator.next()  // runtime is initialized
 
         await #expect(runtime.isSubscribed(to: "forward") == true)
         await #expect(runtime.isSubscribed(to: "backward") == true)
 
         forwardCont.yield(.forwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 1)
 
         backwardCont.yield(.backwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 0)
 
         backwardCont.finish()
 
         forwardCont.yield(.forwardTick)
-        await heartbeat.next()
+        _ = await iterator.next()
         await #expect(runtime.currentModel?.tickCount == 1)
         await #expect(runtime.isSubscribed(to: "backward") == false)
 
         await runtime.stop()
     }
+
+    @Test @MainActor func uiRuntimeUpdatesModel() async throws {
+        let uiRuntime = UIRuntime(program: Counter())
+
+        uiRuntime.start()
+
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(uiRuntime.currentModel == 0)
+
+        uiRuntime.send(.increment)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(uiRuntime.currentModel == 1)
+    }
 }
 
 private struct Counter: Component {
+    typealias View = Never
+
     func initialize() -> (Int, Command<CounterMessage>) {
         (0, .none)
     }
@@ -325,18 +316,25 @@ private struct Counter: Component {
     }
 }
 
-private struct AsyncCounter: Component {
+private struct SingleAsyncIncrement: Component {
+    typealias View = Never
+
     func initialize() -> (Int, Command<CounterMessage>) {
-        (0, .task { .increment })
+        (
+            0,
+            .task {
+                try? await Task.sleep(for: .milliseconds(10))
+                return .increment
+            }
+        )
     }
 
-    func update(_ model: Int, with _: CounterMessage) -> (Model, Command<CounterMessage>) {
-        let newModel = model + 1
-
-        return if newModel < 3 {
-            (newModel, .task { .increment })
-        } else {
-            (newModel, .none)
+    func update(_ model: Int, with message: CounterMessage) -> (Model, Command<CounterMessage>) {
+        switch message {
+        case .increment:
+            return (model + 1, .none)
+        case .decrement:
+            return (model - 1, .none)
         }
     }
 }
@@ -346,13 +344,15 @@ private enum CounterMessage {
 }
 
 private struct SubscriptionCounter: Component {
+    typealias View = Never
+
     enum Message {
         case toggleRunning, toggleDirection
         case forwardTick, backwardTick
     }
 
     let isRunning: Bool
-    let subscriptions: (Model) -> [AnyHashable: AsyncStream<Message>]
+    let subscriptions: @Sendable (Model) -> [AnyHashable: AsyncStream<Message>]
 
     struct Model {
         var isRunning: Bool
